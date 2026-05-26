@@ -39,16 +39,15 @@ export async function POST() {
     return NextResponse.json({ error: exError?.message || "No exercises" }, { status: 500 });
   }
 
-  // 3. Apply optional equipment filter based on gym_mode
+  // 3. Apply equipment filter based on gym_mode
   let candidateExercises: Exercise[] = allExercises;
   if (!profile.gym_mode) {
-    // Exclude gym-specific equipment if gym_mode is off
     candidateExercises = allExercises.filter(
       (ex) => ex.equipment_needed === "none" || ex.equipment_needed === "bodyweight"
     );
   }
 
-  // 4. Fetch past exercise completions (last 30 days) for completion rate
+  // 4. Fetch past exercise completions (last 30 days) for family completion rates
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   const { data: pastTasks } = await supabase
@@ -75,7 +74,14 @@ export async function POST() {
     return data.completed / data.total;
   };
 
-  // 5. Scoring function
+  // 5. Read planner preferences (from optimizer)
+  const prefs = profile.planner_preferences || {};
+  const avoidHours = prefs.avoidHours || [];
+  const avoidFamilies = prefs.avoidFamilies || [];
+  const benefitBoosts = prefs.benefitBoosts || {};
+  const benefitDowngrades = prefs.benefitDowngrades || {};
+
+  // 6. Scoring function (now includes preferences)
   const computeScore = (exercise: Exercise, selectedMuscles: Set<string>): number => {
     let score = 0;
 
@@ -85,13 +91,13 @@ export async function POST() {
     }
     if (profile.age_range === "50+" && exercise.target_audience.includes("elderly")) {
       score += 3;
-      if (exercise.difficulty > 1) score -= 2; // prefer lower difficulty
+      if (exercise.difficulty > 1) score -= 2;
     }
     if (profile.age_range === "18-25" || profile.age_range === "26-35") {
       if (exercise.target_audience.includes("athletes")) score += 2;
     }
 
-    // Impact level (higher impact → higher score)
+    // Impact level
     score += exercise.impact_level * 0.5;
 
     // Past completion rate (encourage variety)
@@ -103,28 +109,29 @@ export async function POST() {
       score -= 5;
     }
 
-    // Diversity bonus: if not in selectedMuscles, small bonus
-    if (!selectedMuscles.has(exercise.muscle_group)) {
-      score += 1;
+    // Penalize avoided families
+    if (avoidFamilies.includes(exercise.family)) {
+      score -= 10;
+    }
+
+    // Boost/downgrade based on benefit ratings
+    for (const benefit of exercise.benefits) {
+      if (benefitBoosts[benefit]) score += benefitBoosts[benefit] * 2;
+      if (benefitDowngrades[benefit]) score -= benefitDowngrades[benefit] * 2;
     }
 
     return Math.round(score * 100) / 100;
   };
 
-  // 6. Select 2–4 exercises
-  const selectedExercises: Exercise[] = [];
-  const selectedMuscles = new Set<string>();
-
-  // Sort exercises by initial score (without muscle penalty) to pick top candidates
+  // 7. Select 2–4 exercises
   const scoredCandidates = candidateExercises.map((ex) => ({
     ...ex,
-    initialScore: computeScore(ex, new Set<string>()) // no muscles yet
+    initialScore: computeScore(ex, new Set<string>())
   })).sort((a, b) => b.initialScore - a.initialScore);
 
   const maxExercises = Math.min(4, scoredCandidates.length);
   const minExercises = Math.min(2, maxExercises);
 
-  // Greedy selection while enforcing muscle diversity
   const picked: typeof scoredCandidates = [];
   const usedMuscles = new Set<string>();
 
@@ -136,7 +143,6 @@ export async function POST() {
     }
   }
 
-  // If still not enough, fill with next best (allowing muscle repeats)
   if (picked.length < minExercises) {
     for (let i = 0; i < scoredCandidates.length && picked.length < minExercises; i++) {
       if (!picked.some((p) => p.id === scoredCandidates[i].id)) {
@@ -145,7 +151,12 @@ export async function POST() {
     }
   }
 
-  // 7. Generate suggestion reasons
+  // 8. Determine available time slots (avoid avoided hours)
+  const defaultTimes = [10, 12, 15, 17];
+  const availableTimes = defaultTimes.filter(h => !avoidHours.includes(String(h)));
+  const possibleTimes = availableTimes.length > 0 ? availableTimes : defaultTimes;
+
+  // 9. Generate suggestion reasons
   const reasons: Record<string, string> = {};
   picked.forEach((ex) => {
     const benefitsStr = ex.benefits.slice(0, 2).join(", ");
@@ -160,7 +171,7 @@ export async function POST() {
     reasons[ex.id] = `${benefitsStr}${audienceReason}`;
   });
 
-  // 8. Delete old auto‑suggested exercise tasks for today (not completed)
+  // 10. Delete old auto‑suggested exercise tasks for today
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const todayEnd = new Date(todayStart);
@@ -176,8 +187,7 @@ export async function POST() {
     .lt("scheduled_time", todayEnd.toISOString())
     .eq("completed", false);
 
-  // 9. Insert new tasks (spread them across the day, e.g., at 10am, 12pm, 3pm, 5pm)
-  const possibleTimes = [10, 12, 15, 17]; // hours
+  // 11. Insert new tasks with appropriate times
   const tasksToInsert = picked.slice(0, maxExercises).map((ex, idx) => {
     const scheduled = new Date();
     scheduled.setHours(possibleTimes[idx] || 15, 0, 0, 0);

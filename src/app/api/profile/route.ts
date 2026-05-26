@@ -9,13 +9,34 @@ export async function GET() {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  // 🛠️ CHANGED: .single() → .maybeSingle()
   const { data, error } = await supabase
     .from("user_profiles")
     .select("*")
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Profile fetch error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // If no profile exists, create one
+  if (!data) {
+    const { data: newProfile, error: insertError } = await supabase
+      .from("user_profiles")
+      .insert({ user_id: user.id })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Profile insert error:", insertError);
+      return NextResponse.json({ error: insertError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ profile: newProfile });
+  }
+
   return NextResponse.json({ profile: data });
 }
 
@@ -28,20 +49,20 @@ export async function POST(request: Request) {
 
   const body = await request.json();
   const allowedFields = [
-  "weight",
-  "gender",
-  "age_range",
-  "occupation_type",
-  "gym_mode",
-  "animation_style",
-  "tone_preference",
-  "gender_based_ui",
-  "wake_time",       // ← new
-  "sleep_time",      // ← new
-  "nap_minutes",     // ← new
-  "daily_goal_ml",           // ← new
-  "weather_adjust_enabled",
-];
+    "weight",
+    "gender",
+    "age_range",
+    "occupation_type",
+    "gym_mode",
+    "animation_style",
+    "tone_preference",
+    "gender_based_ui",
+    "wake_time",
+    "sleep_time",
+    "nap_minutes",
+    "daily_goal_ml",
+    "weather_adjust_enabled",
+  ];
 
   const updates: Record<string, any> = {};
   for (const key of allowedFields) {
@@ -54,13 +75,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "No valid fields provided" }, { status: 400 });
   }
 
+  // 🛠️ CHANGED: upsert so it creates the row if missing
   const { data, error } = await supabase
     .from("user_profiles")
-    .update(updates)
-    .eq("user_id", user.id)
+    .upsert({ user_id: user.id, ...updates }, { onConflict: "user_id" })
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Profile update error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
   return NextResponse.json({ profile: data });
 }
