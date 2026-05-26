@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { motion } from "framer-motion";
 import ProgressCircle from "./ProgressCircle";
 import Avatar from "@/components/Avatar";
 import { useWeather } from "@/hooks/useWeather";
 import { computeAdjustedGoal } from "@/lib/adjustGoal";
+import ExerciseModal from "@/components/ExerciseModal";
 
 interface WaterEntry {
   id: string;
@@ -18,48 +19,43 @@ interface PlannerTask {
   id: string;
   scheduled_time: string;
   amount_ml: number;
+  task_type?: string;
   completed?: boolean;
   points_earned?: number;
+  suggestion_reason?: any;
+  exercise_id?: any;
 }
 
 export default function DashboardPage() {
-  // Supabase browser client is created inside client-only effects
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
   const [entries, setEntries] = useState<WaterEntry[]>([]);
+
   const [weightInput, setWeightInput] = useState("");
   const [loadingWeight, setLoadingWeight] = useState(false);
   const [logLoading, setLogLoading] = useState(false);
 
-  const [wakeTime, setWakeTime] = useState<number | null>(null);
-  const [sleepTime, setSleepTime] = useState<number | null>(null);
-  const [napMinutes, setNapMinutes] = useState(0);
-  const [editWake, setEditWake] = useState(false);
-  const [editSleep, setEditSleep] = useState(false);
-  const [editingNap, setEditingNap] = useState(false);
-  const [showNapPrompt, setShowNapPrompt] = useState(false);
-  const [napPromptMinutes, setNapPromptMinutes] = useState(20);
-  const napInputRef = useRef<HTMLInputElement | null>(null);
-
   // Planner
   const [plannerTasks, setPlannerTasks] = useState<PlannerTask[]>([]);
+  const [exerciseTasks, setExerciseTasks] = useState<PlannerTask[]>([]);
   const [loadingPlanner, setLoadingPlanner] = useState(true);
   const [todayPoints, setTodayPoints] = useState(0);
+  const [suggestLoading, setSuggestLoading] = useState(false);
 
-  const [exerciseTasks, setExerciseTasks] = useState<any[]>([]);
-const [suggestLoading, setSuggestLoading] = useState(false);
+  // Modal
+  const [modalTask, setModalTask] = useState<PlannerTask | null>(null);
+  const [showModal, setShowModal] = useState(false);
 
   // Weather
-  const [city, setCity] = useState<string>("");
+  const [city, setCity] = useState("");
   const [showCityInput, setShowCityInput] = useState(false);
   const { weather, loading: weatherLoading } = useWeather(city);
   const [weatherAdjustEnabled, setWeatherAdjustEnabled] = useState(false);
 
   // Goals
-  const baselineGoal = profile?.weight ? profile.weight * 30 : 2000; // ml
+  const baselineGoal = profile?.weight ? profile.weight * 30 : 2000;
   const dailyGoal = weather ? computeAdjustedGoal(baselineGoal, weather.temp, weather.humidity, weatherAdjustEnabled) : baselineGoal;
-
-  const totalIntake = entries.reduce((sum, e) => sum + e.amount_ml, 0);
+  const totalIntake = entries.reduce((s, e) => s + e.amount_ml, 0);
   const remaining = Math.max(dailyGoal - totalIntake, 0);
   const progressPercent = Math.min((totalIntake / dailyGoal) * 100, 100);
 
@@ -72,146 +68,116 @@ const [suggestLoading, setSuggestLoading] = useState(false);
     if (res.ok) {
       const { profile } = await res.json();
       setProfile(profile);
-      setWakeTime(profile?.wake_time ?? null);
-      setSleepTime(profile?.sleep_time ?? null);
-      setNapMinutes(profile?.nap_minutes ?? 0);
       if (profile?.weight) setWeightInput(String(profile.weight));
     }
   }, []);
 
-  const fetchPlanner = async () => {
+  const fetchPlanner = useCallback(async () => {
     setLoadingPlanner(true);
-    const res = await fetch("/api/planner");
-    if (res.ok) {
+    try {
+      const res = await fetch("/api/planner");
+      if (!res.ok) return;
       const { tasks } = await res.json();
-      const hydration = tasks.filter((t: any) => t.task_type === "hydration");
-      const exercise = tasks.filter((t: any) => t.task_type === "exercise");
-      setPlannerTasks(hydration);
-      setExerciseTasks(exercise);
+      setPlannerTasks(tasks.filter((t: any) => t.task_type === "hydration") || []);
+      setExerciseTasks(tasks.filter((t: any) => t.task_type === "exercise") || []);
       const pts = tasks.reduce((sum: number, t: any) => sum + (t.points_earned || 0), 0);
       setTodayPoints(pts);
+    } finally {
+      setLoadingPlanner(false);
     }
-    setLoadingPlanner(false);
-  };
+  }, []);
 
-  const completeTask = async (taskId: string) => {
-    setPlannerTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, completed: true, points_earned: (t.points_earned || 0) + 10 } : t)));
-    setTodayPoints((p) => p + 10);
-    const res = await fetch(`/api/planner/${taskId}`, { method: "PATCH" });
-    if (!res.ok) {
+  const completeTask = useCallback(async (taskId: string) => {
+    // optimistic
+    setPlannerTasks((p) => p.map((t) => (t.id === taskId ? { ...t, completed: true } : t)));
+    setExerciseTasks((p) => p.map((t) => (t.id === taskId ? { ...t, completed: true } : t)));
+    try {
+      const res = await fetch(`/api/planner/${taskId}`, { method: "PATCH" });
+      if (!res.ok) throw new Error("patch failed");
       await fetchPlanner();
-      setTodayPoints((p) => Math.max(0, p - 10));
+    } catch {
+      await fetchPlanner();
     }
-  };
+  }, [fetchPlanner]);
 
-  const regeneratePlanner = async () => {
+  const regeneratePlanner = useCallback(async () => {
     await fetch("/api/planner/regenerate", { method: "POST" });
     fetchPlanner();
-  };
+  }, [fetchPlanner]);
 
-  // Fetch initial data
-  const fetchData = useCallback(async () => {
+  const handleSuggestExercises = useCallback(async () => {
+    setSuggestLoading(true);
     try {
-      const supabase = createClient();
-      const { data } = await supabase.auth.getUser();
-      setUser(data.user ?? null);
-    } catch {
-      setUser(null);
+      const res = await fetch("/api/suggest-exercises", { method: "POST" });
+      if (res.ok) await fetchPlanner();
+    } finally {
+      setSuggestLoading(false);
     }
+  }, [fetchPlanner]);
 
-    await fetchProfile();
+  // initial client-only data
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase.auth.getUser();
+        setUser(data.user ?? null);
+      } catch {
+        setUser(null);
+      }
+      await fetchProfile();
       await fetchPlanner();
-
-    const waterRes = await fetch("/api/water");
-    if (waterRes.ok) {
-      const { entries } = await waterRes.json();
-      setEntries(entries || []);
-    }
+      const waterRes = await fetch("/api/water");
+      if (waterRes.ok) {
+        const { entries } = await waterRes.json();
+        setEntries(entries || []);
+      }
+    };
+    run();
   }, [fetchProfile, fetchPlanner]);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  // Update weight
   const handleWeightSave = async () => {
     const weightNum = parseFloat(weightInput);
     if (isNaN(weightNum) || weightNum <= 0) return;
     setLoadingWeight(true);
-    const res = await fetch("/api/profile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ weight: weightNum }),
-    });
-    if (res.ok) {
-      const { profile } = await res.json();
-      setProfile(profile);
+    try {
+      const res = await fetch("/api/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ weight: weightNum }) });
+      if (res.ok) {
+        const { profile } = await res.json();
+        setProfile(profile);
+      }
+    } finally {
+      setLoadingWeight(false);
     }
-    setLoadingWeight(false);
   };
 
-  // Log water (optimistic update)
   const logWater = async (amount: number) => {
-    const tempEntry: WaterEntry = { id: `temp-${Date.now()}`, amount_ml: amount, logged_at: new Date().toISOString() };
-    setEntries((prev) => [tempEntry, ...prev]);
+    const temp: WaterEntry = { id: `temp-${Date.now()}`, amount_ml: amount, logged_at: new Date().toISOString() };
+    setEntries((p) => [temp, ...p]);
     setLogLoading(true);
     try {
-      const res = await fetch("/api/water", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount_ml: amount }),
-      });
+      const res = await fetch("/api/water", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ amount_ml: amount }) });
       const data = await res.json();
-      if (!res.ok) {
-        setEntries((prev) => prev.filter((e) => e.id !== tempEntry.id));
-      } else {
-        setEntries((prev) => prev.map((e) => (e.id === tempEntry.id ? data.entry : e)));
-        if (data.nap_suggestion) setShowNapPrompt(true);
+      if (!res.ok) setEntries((p) => p.filter((e) => e.id !== temp.id));
+      else {
+        setEntries((p) => p.map((e) => (e.id === temp.id ? data.entry : e)));
+        if (data.nap_suggestion) {
+          // optionally handle
+        }
         await fetchProfile();
         await fetchPlanner();
       }
     } catch {
-      setEntries((prev) => prev.filter((e) => e.id !== tempEntry.id));
+      setEntries((p) => p.filter((e) => e.id !== temp.id));
     } finally {
       setLogLoading(false);
     }
   };
-  const handleSuggestExercises = async () => {
-  setSuggestLoading(true);
-  const res = await fetch("/api/suggest-exercises", { method: "POST" });
-  if (res.ok) {
-    fetchPlanner(); // refresh tasks to see new suggestions
-  } else {
-    alert("Failed to generate suggestions.");
-  }
-  setSuggestLoading(false);
-};
-
-  // Persist wake/sleep/nap changes
-  const saveProfileField = async (payload: Record<string, any>) => {
-    await fetch("/api/profile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    await fetchProfile();
-  };
-
-  // update server daily goal if changed (debounced)
-  useEffect(() => {
-    if (profile && dailyGoal !== profile.daily_goal_ml) {
-      const timer = setTimeout(() => {
-        fetch("/api/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ daily_goal_ml: dailyGoal }) });
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [dailyGoal, profile]);
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-100 p-4 md:p-8">
       <div className="mx-auto max-w-2xl">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl bg-white p-6 shadow-lg">
-          {/* Top: weight + avatar + points */}
           <div className="mb-6 flex items-center gap-3">
             <label className="text-sm font-medium text-gray-700">Weight (kg):</label>
             <input type="number" value={weightInput} onChange={(e) => setWeightInput(e.target.value)} className="w-24 rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="70" min="1" />
@@ -227,66 +193,38 @@ const [suggestLoading, setSuggestLoading] = useState(false);
             </div>
           </div>
 
-          {/* Exercise Suggestions */}
-<div className="mt-8">
-  <div className="flex items-center justify-between mb-3">
-    <h2 className="text-lg font-semibold text-gray-700">Today's Exercises</h2>
-    <button
-      onClick={handleSuggestExercises}
-      disabled={suggestLoading}
-      className="text-xs text-emerald-600 underline disabled:opacity-50"
-    >
-      {suggestLoading ? "Generating..." : "Suggest"}
-    </button>
-  </div>
+          {/* Exercises */}
+          <div className="mt-8">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-700">Today's Exercises</h2>
+              <button onClick={handleSuggestExercises} disabled={suggestLoading} className="text-xs text-emerald-600 underline disabled:opacity-50">{suggestLoading ? "Generating..." : "Suggest"}</button>
+            </div>
 
-  {exerciseTasks.length === 0 ? (
-    <p className="text-sm text-gray-400">No exercises suggested yet. Click "Suggest" to get personalised recommendations.</p>
-  ) : (
-    <div className="space-y-3">
-              {exerciseTasks.map((task, idx) => {
-        const reason = task.suggestion_reason?.reason || "";
-        return (
-          <motion.div
-            key={task.id}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: idx * 0.05 }}
-            className={`flex items-center gap-3 rounded-lg border p-3 ${
-              task.completed ? "bg-gray-50 border-gray-200 opacity-70" : "bg-white border-emerald-200"
-            }`}
-          >
-            <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-purple-100 text-purple-700 font-bold text-sm">
-              {new Date(task.scheduled_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </div>
-            <div className="flex-1">
-              <p className="font-medium text-sm">
-                {task.exercise_id?.name || "Exercise"}
-              </p>
-              {reason && (
-                <p className="text-xs text-gray-500">{reason}</p>
-              )}
-              {task.completed && (
-                <p className="text-xs text-green-600">✓ Completed +{task.points_earned} pts</p>
-              )}
-            </div>
-            {!task.completed && (
-              <button
-                onClick={() => completeTask(task.id)}
-                className="ml-auto flex-shrink-0 w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors"
-                aria-label="Complete exercise"
-              >
-                ✓
-              </button>
+            {exerciseTasks.length === 0 ? (
+              <p className="text-sm text-gray-400">No exercises suggested yet. Click "Suggest" to get personalised recommendations.</p>
+            ) : (
+              <div className="space-y-3">
+                {exerciseTasks.map((task, idx) => (
+                  <motion.div key={task.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: idx * 0.05 }} className={`flex items-center gap-3 rounded-lg border p-3 ${task.completed ? "bg-gray-50 border-gray-200 opacity-70" : "bg-white border-emerald-200"}`}>
+                    <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-purple-100 text-purple-700 font-bold text-sm">{new Date(task.scheduled_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                    <div className="flex-1">
+                      <p className="font-medium text-sm">{task.exercise_id?.name || 'Exercise'}</p>
+                      {task.suggestion_reason?.reason && <p className="text-xs text-gray-500">{task.suggestion_reason.reason}</p>}
+                      {task.completed && <p className="text-xs text-green-600">✓ Completed +{task.points_earned} pts</p>}
+                    </div>
+                    {!task.completed ? (
+                      <div className="flex gap-2">
+                        <button onClick={() => { setModalTask(task); setShowModal(true); }} className="text-xs text-emerald-600 underline">Details</button>
+                        <button onClick={() => completeTask(task.id)} className="ml-auto flex-shrink-0 w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors" aria-label="Complete exercise">✓</button>
+                      </div>
+                    ) : null}
+                  </motion.div>
+                ))}
+              </div>
             )}
-          </motion.div>
-        );
-      })}
-    </div>
-  )}
-</div>
+          </div>
 
-          {/* Weather + city input */}
+          {/* Weather */}
           {weatherLoading && <p className="text-sm text-gray-400 mb-2">Loading weather…</p>}
           {weather && (
             <div className="mb-4 flex items-center justify-between rounded-lg bg-sky-50 p-3">
@@ -306,35 +244,26 @@ const [suggestLoading, setSuggestLoading] = useState(false);
               <button onClick={() => setShowCityInput(false)} className="rounded bg-emerald-600 px-3 py-1 text-sm text-white">Set</button>
             </div>
           )}
-          {!weather && !weatherLoading && !city && (
-            <div className="mb-4 text-sm text-gray-500">
-              <p>Allow location access or <button onClick={() => setShowCityInput(true)} className="underline text-blue-600">enter a city</button> for weather‑adjusted goals.</p>
-            </div>
-          )}
 
-          {/* Goal display */}
+          {/* Goal and progress */}
           <div className="mb-6 text-center">
             <p className="text-sm text-gray-500">Daily Goal</p>
             <p className="text-2xl font-bold text-emerald-600">{dailyGoal} ml</p>
             {weather && weatherAdjustEnabled && <p className="text-xs text-gray-400">(baseline {baselineGoal} ml, adjusted for weather)</p>}
           </div>
 
-          {/* Progress circle */}
           <div className="flex justify-center mb-6"><ProgressCircle percent={progressPercent} size={160} /></div>
 
-          {/* Intake stats */}
           <div className="mb-4 flex justify-between text-sm"><span><span className="font-semibold">{totalIntake} ml</span> logged</span><span><span className="font-semibold">{remaining} ml</span> remaining</span></div>
 
-          {/* Water logging buttons */}
           <div className="flex gap-2 mb-4">
             <button onClick={() => logWater(250)} disabled={logLoading} className="flex-1 rounded-lg bg-blue-100 py-3 text-sm font-medium text-blue-700 hover:bg-blue-200 transition-colors">+250 ml</button>
             <button onClick={() => logWater(500)} disabled={logLoading} className="flex-1 rounded-lg bg-blue-100 py-3 text-sm font-medium text-blue-700 hover:bg-blue-200 transition-colors">+500 ml</button>
           </div>
 
-          {/* Custom amount */}
           <CustomWaterInput onLog={logWater} loading={logLoading} />
 
-          {/* Planner Tasks */}
+          {/* Hydration plan */}
           <div className="mt-8">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-gray-700">Today's Hydration Plan</h2>
@@ -342,7 +271,7 @@ const [suggestLoading, setSuggestLoading] = useState(false);
             </div>
 
             {loadingPlanner ? (
-              <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-12 bg-gray-100 rounded-lg animate-pulse" />)}</div>
+              <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-12 bg-gray-100 rounded-lg animate-pulse" />)}</div>
             ) : plannerTasks.length === 0 ? (
               <p className="text-sm text-gray-400">No tasks scheduled. Set your wake and sleep times.</p>
             ) : (
@@ -372,11 +301,21 @@ const [suggestLoading, setSuggestLoading] = useState(false);
               </div>
             </div>
           )}
+
         </motion.div>
       </div>
+
+      {/* Exercise details modal */}
+      {showModal && modalTask && (
+        <ExerciseModal
+          open={showModal}
+          onClose={() => { setShowModal(false); setModalTask(null); }}
+          task={modalTask}
+          onComplete={async (taskId: string) => { await completeTask(taskId); setShowModal(false); setModalTask(null); }}
+        />
+      )}
     </main>
   );
-
 }
 
 // Custom water input component
