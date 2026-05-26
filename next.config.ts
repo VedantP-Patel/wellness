@@ -1,5 +1,6 @@
-// next.config.mjs
+// next.config.ts
 import withSerwistInit from "@serwist/next";
+import type { NextConfig } from "next";
 
 const withSerwist = withSerwistInit({
   swSrc: "src/worker/index.ts",
@@ -8,13 +9,9 @@ const withSerwist = withSerwistInit({
   // include: [/\.html$/, /\.js$/, /\.css$/],
 });
 
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  // Disable Turbopack (we need webpack for Serwist)
-  experimental: {
-    turbo: false,
-  },
-  // other config...
+const nextConfig: NextConfig = {
+  // Removed the invalid experimental.turbo boolean.
+  // Add any valid Next.js configuration here.
 };
 
 export default withSerwist(nextConfig);
