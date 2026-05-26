@@ -82,8 +82,10 @@ export async function POST() {
   const activeMinutes = activityData?.["activities-minutesFairlyActive"]?.[0]?.value || 0;
 
   // Sleep: sum minutes of all sleep logs
+  // Sleep: sum minutes of all sleep logs
   let sleepMinutes = 0;
-  let sleepStages = {};
+  // Tell TypeScript exactly what keys this object can hold
+  let sleepStages: { deep?: number; light?: number; rem?: number } = {};
   if (sleepData?.sleep) {
     for (const log of sleepData.sleep) {
       sleepMinutes += log.minutesAsleep || 0;
