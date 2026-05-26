@@ -63,16 +63,19 @@ export async function GET() {
     .map(([name, count]) => ({ name, count }));
 
   // 2. Popular exercises (most completed)
-  const { data: taskCounts } = await supabase
-    .from("planner_tasks")
-    .select("exercise_id, count")
-    .eq("completed", true)
-    .eq("task_type", "exercise")
-    .group("exercise_id")
-    .order("count", { ascending: false })
-    .limit(10);
+  // Workaround: Aggregate in JavaScript since Supabase JS client lacks .group()
+  const exerciseCounts: Record<string, number> = {};
+  
+  (completedTasks || []).forEach(task => {
+    if (task.exercise_id) {
+      exerciseCounts[task.exercise_id] = (exerciseCounts[task.exercise_id] || 0) + 1;
+    }
+  });
 
-  const popularExercises = taskCounts || [];
+  const popularExercises = Object.entries(exerciseCounts)
+    .map(([exercise_id, count]) => ({ exercise_id, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
 
   // 3. Feedback summary
   const { count: totalFeedback, data: feedbackSum } = await supabase
