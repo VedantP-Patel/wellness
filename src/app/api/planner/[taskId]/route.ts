@@ -4,13 +4,15 @@ import { NextResponse } from "next/server";
 
 export async function PATCH(
   request: Request,
-  { params }: { params: { taskId: string } }
+  { params }: { params: Promise<{ taskId: string }> } // Type as Promise
 ) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const taskId = params.taskId;
+  // Await the params Promise to extract the taskId
+  const { taskId } = await params;
+  
   const { data: task, error: fetchError } = await supabase
     .from("planner_tasks")
     .select("*")
