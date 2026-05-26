@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 
 export async function PATCH(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const supabase = await createClient();
   const {
@@ -22,8 +22,9 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const exerciseId = params.id;
-  const { approved } = await request.json(); // true or false (or we can set any fields)
+  // Await the params Promise to extract the ID
+  const { id: exerciseId } = await params;
+  const { approved } = await request.json(); 
 
   const { error } = await supabase
     .from("exercise_library")
@@ -37,7 +38,7 @@ export async function PATCH(
 
 export async function DELETE(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const supabase = await createClient();
   const {
@@ -55,7 +56,8 @@ export async function DELETE(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const exerciseId = params.id;
+  // Await the params Promise to extract the ID
+  const { id: exerciseId } = await params;
   const { error } = await supabase
     .from("exercise_library")
     .delete()
