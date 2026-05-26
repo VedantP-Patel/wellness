@@ -10,8 +10,9 @@ const withSerwist = withSerwistInit({
 });
 
 const nextConfig: NextConfig = {
-  // Removed the invalid experimental.turbo boolean.
-  // Add any valid Next.js configuration here.
+  // Explicitly set an empty turbopack object to resolve the worker ambiguity
+  // and allow Serwist's Webpack configuration to compile without exhausting retries.
+  turbopack: {},
 };
 
 export default withSerwist(nextConfig);
